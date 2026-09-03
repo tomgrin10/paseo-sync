@@ -3,6 +3,7 @@ import type {
   Conflict,
   Direction,
   Peer,
+  Scope,
   Settings,
   Step,
   SyncPlan,
@@ -27,6 +28,17 @@ export type PlanInput = {
   peer: Peer;
   direction: Direction;
   includeArchived: boolean;
+  /**
+   * "chat-only" carries conversations and nothing else — no git, no worktrees,
+   * no file copies. Defaults to "everything" so an existing caller is unchanged.
+   */
+  scope?: Scope | null;
+  /**
+   * Agent ids to carry. When non-empty the plan covers exactly these tabs and
+   * the projects that hold them, regardless of the saved project selection —
+   * a tab is worth moving on its own far more often than a whole project is.
+   */
+  agentIds?: string[] | null;
   settings: Settings;
   state: PeerState;
   local: Inventory;
@@ -64,6 +76,20 @@ function workspacesForProject(inventory: Inventory, projectKey: string): Workspa
   return inventory.workspaces.filter((w) => projectIds.has(w.projectId));
 }
 
+/**
+ * The project holding a session, resolved through the same workspace matching
+ * the plan uses everywhere else: workspaceId when the record has one, cwd
+ * otherwise, because legacy records predate workspace ids.
+ */
+function projectKeyForSession(inventory: Inventory, session: SessionRecord): string | null {
+  const workspace = inventory.workspaces.find((w) =>
+    session.workspaceId ? w.workspaceId === session.workspaceId : w.cwd === session.cwd,
+  );
+  if (!workspace) return null;
+  const project = inventory.projects.find((p) => p.projectId === workspace.projectId);
+  return project ? projectKeyOf(project) : null;
+}
+
 function repoRootFor(inventory: Inventory, projectKey: string): string | null {
   const project = inventory.projects.find((p) => projectKeyOf(p) === projectKey);
   return project?.rootPath ?? null;
@@ -92,6 +118,11 @@ function providerFamily(session: SessionRecord): "claude" | "codex" | "other" {
 
 export function buildPlan(input: PlanInput): ResolvedPlan {
   const { peer, direction, includeArchived, settings, state, targetProviders } = input;
+  const scope: Scope = input.scope ?? "everything";
+  // An empty set means "no tab filter", which is different from "no tabs".
+  const pickedTabs = new Set(input.agentIds ?? []);
+  const tabFiltered = pickedTabs.size > 0;
+  const chatOnly = scope === "chat-only";
   const source = direction === "push" ? input.local : input.remote;
   const target = direction === "push" ? input.remote : input.local;
   const sourceEndpoint: Endpoint = source.endpoint;
@@ -105,10 +136,28 @@ export function buildPlan(input: PlanInput): ResolvedPlan {
   let totalBytes = 0;
 
   const maxBytes = Math.max(1, settings.maxTranscriptMb) * 1024 * 1024;
-  const selected = state.selectedProjects;
+  // Chosen tabs imply their own projects, so picking a tab never requires
+  // also selecting the project that happens to contain it.
+  const selected = tabFiltered
+    ? Array.from(
+        new Set(
+          source.sessions
+            .filter((session) => pickedTabs.has(session.agentId))
+            .map((session) => projectKeyForSession(source, session))
+            .filter((key): key is string => key !== null),
+        ),
+      )
+    : state.selectedProjects;
 
   if (selected.length === 0) {
-    notes.push("No projects selected. Pick projects on the Projects tab — Sync never touches anything you have not selected.");
+    notes.push(
+      tabFiltered
+        ? "The selected tabs could not be matched to a project on this machine."
+        : "No projects selected. Pick projects on the Projects tab, or select individual tabs on the Tabs tab — Sync never touches anything you have not selected.",
+    );
+  }
+  if (chatOnly) {
+    notes.push("Chat only: conversations are carried, and git, worktrees and files are left alone.");
   }
 
   // Provider availability on the receiving side. A carried session that cannot
@@ -197,7 +246,7 @@ export function buildPlan(input: PlanInput): ResolvedPlan {
         });
         detail.set(id, { kind: "create-workspace", workspace, targetCwd, repoName });
 
-        if (workspace.isPaseoOwnedWorktree && workspace.branch) {
+        if (!chatOnly && workspace.isPaseoOwnedWorktree && workspace.branch) {
           const wtId = `wt_${workspace.workspaceId}`;
           steps.push({
             id: wtId,
@@ -219,6 +268,9 @@ export function buildPlan(input: PlanInput): ResolvedPlan {
 
       for (const session of sessionsForWorkspace(source, workspace)) {
         if (!session.sessionId) continue;
+        // A tab selection is exact: nothing outside it is carried, even when it
+        // sits in the same workspace as something that is.
+        if (tabFiltered && !pickedTabs.has(session.agentId)) continue;
         const family = providerFamily(session);
         const label = session.title ?? session.sessionId.slice(0, 8);
 
@@ -283,7 +335,7 @@ export function buildPlan(input: PlanInput): ResolvedPlan {
       }
     }
 
-    if (branchesWanted.size > 0 && sourceRepoRoot) {
+    if (!chatOnly && branchesWanted.size > 0 && sourceRepoRoot) {
       const id = `git_${projectKey}`;
       const refs = Array.from(branchesWanted).sort();
       steps.push({

@@ -2,14 +2,15 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import React, { useMemo, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
-import type { Direction, Peer } from "./contracts.shared";
+import { ActivityIndicator, ScrollView, Text, View } from "react-native";
+import type { Direction, Peer, Tab } from "./contracts.shared";
 import {
   peerProbe,
   peerRemove,
   peerSave,
   peersList,
   planBuild,
+  tabList,
   projectsList,
   projectsSelect,
   runCancel,
@@ -36,11 +37,12 @@ import {
   type Theme,
 } from "./ui.client";
 
-type TabId = "peers" | "projects" | "preview" | "run" | "settings";
+type TabId = "peers" | "projects" | "tabs" | "preview" | "run" | "settings";
 
 const TABS = [
   { id: "peers" as const, label: "Peers" },
   { id: "projects" as const, label: "Projects" },
+  { id: "tabs" as const, label: "Tabs" },
   { id: "preview" as const, label: "Preview" },
   { id: "run" as const, label: "Run" },
   { id: "settings" as const, label: "Settings" },
@@ -81,6 +83,11 @@ export function SyncSurface({ theme, layout }: PluginSurfaceProps) {
   const [includeArchived, setIncludeArchived] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
   const [resolutions, setResolutions] = useState<Record<string, "source" | "target" | "skip">>({});
+  // Tab-level selection. Empty means "no tab filter" — the plan then falls back
+  // to the saved project selection, so the coarse and fine surfaces coexist
+  // rather than one silently overriding the other.
+  const [pickedTabs, setPickedTabs] = useState<string[]>([]);
+  const [chatOnly, setChatOnly] = useState(true);
 
   const client = useQueryClient();
   const callPeers = useRpc(peersList);
@@ -126,10 +133,27 @@ export function SyncSurface({ theme, layout }: PluginSurfaceProps) {
         <ProjectsTab theme={theme} peer={activePeer} onChanged={() => client.invalidateQueries({ queryKey: ["sync"] })} />
       ) : null}
 
+      {tab === "tabs" ? (
+        <TabsTab
+          theme={theme}
+          peer={activePeer}
+          direction={direction}
+          setDirection={setDirection}
+          includeArchived={includeArchived}
+          picked={pickedTabs}
+          setPicked={setPickedTabs}
+          chatOnly={chatOnly}
+          setChatOnly={setChatOnly}
+          onPreview={() => setTab("preview")}
+        />
+      ) : null}
+
       {tab === "preview" ? (
         <PreviewTab
           theme={theme}
           peer={activePeer}
+          pickedTabs={pickedTabs}
+          chatOnly={chatOnly}
           direction={direction}
           setDirection={setDirection}
           includeArchived={includeArchived}
@@ -405,9 +429,158 @@ function ProjectsTab({ theme, peer, onChanged }: { theme: Theme; peer: Peer | nu
 
 // ---------------------------------------------------------------- preview
 
+/**
+ * Tab-level selection for chat sync.
+ *
+ * Projects are the wrong granularity for conversations: the thing you want on
+ * the other machine is usually one tab you were in an hour ago, not the repo
+ * around it. This lists every agent tab on the sending side, newest first, and
+ * says what the receiving side already holds — so picking is a matter of
+ * recognising a title, not reasoning about paths.
+ */
+function TabsTab({
+  theme,
+  peer,
+  direction,
+  setDirection,
+  includeArchived,
+  picked,
+  setPicked,
+  chatOnly,
+  setChatOnly,
+  onPreview,
+}: {
+  theme: Theme;
+  peer: Peer | null;
+  direction: Direction;
+  setDirection: (next: Direction) => void;
+  includeArchived: boolean;
+  picked: string[];
+  setPicked: (next: string[]) => void;
+  chatOnly: boolean;
+  setChatOnly: (next: boolean) => void;
+  onPreview: () => void;
+}) {
+  const callTabs = useRpc(tabList);
+  const [query, setQuery] = useState("");
+
+  const tabs = useQuery({
+    queryKey: ["sync", "tabs", peer?.id, direction, includeArchived],
+    queryFn: () =>
+      callTabs({ peerId: peer?.id ?? "", direction, includeArchived, query: null }),
+    enabled: Boolean(peer),
+    retry: false,
+  });
+
+  if (!peer) {
+    return <EmptyState theme={theme} title="No peer" hint="Add a peer on the Peers tab first." />;
+  }
+
+  const all = tabs.data?.tabs ?? [];
+  const needle = query.trim().toLowerCase();
+  const shown = needle
+    ? all.filter(
+        (tab) =>
+          tab.title.toLowerCase().includes(needle) ||
+          tab.projectKey.toLowerCase().includes(needle) ||
+          (tab.workspaceTitle ?? "").toLowerCase().includes(needle),
+      )
+    : all;
+
+  const chosen = new Set(picked);
+  const toggle = (agentId: string) => {
+    const next = new Set(chosen);
+    if (next.has(agentId)) next.delete(agentId);
+    else next.add(agentId);
+    setPicked(Array.from(next));
+  };
+
+  const toneFor = (state: Tab["state"]) =>
+    state === "missing" ? "warning" : state === "older" ? "warning" : state === "current" ? "success" : "neutral";
+
+  return (
+    <>
+      <Card theme={theme}>
+        <SectionTitle theme={theme} title="Direction" hint={direction === "push" ? "to the peer" : "from the peer"} />
+        <Segmented
+          theme={theme}
+          value={direction}
+          onChange={setDirection}
+          options={[
+            { id: "push" as Direction, label: `Push → ${peer.label}` },
+            { id: "pull" as Direction, label: `Pull ← ${peer.label}` },
+          ]}
+        />
+        <Checkbox
+          theme={theme}
+          checked={chatOnly}
+          onToggle={() => setChatOnly(!chatOnly)}
+          label="Chat only"
+          hint="Carry the conversations and nothing else — no git fetch, no worktrees, no file copies."
+        />
+      </Card>
+
+      <Card theme={theme}>
+        <SectionTitle
+          theme={theme}
+          title="Tabs"
+          hint={picked.length > 0 ? `${picked.length} selected` : `${shown.length} available`}
+        />
+        <Note theme={theme}>
+          Nothing here is carried unless you tick it. With no tabs ticked, a run falls back to whatever you selected
+          on the Projects tab, so the two surfaces never silently override each other.
+        </Note>
+        <Field theme={theme} value={query} onChangeText={setQuery} placeholder="Filter by title, workspace or project" />
+
+        {tabs.isLoading ? <ActivityIndicator color={theme.colors.accent} /> : null}
+        {tabs.data?.message ? <Note theme={theme} tone="warning">{tabs.data.message}</Note> : null}
+        {!tabs.isLoading && shown.length === 0 ? (
+          <Note theme={theme}>No tabs match.</Note>
+        ) : null}
+
+        {shown.map((tab) => (
+          <View key={tab.agentId} style={{ gap: 4, paddingVertical: 6 }}>
+            <Checkbox
+              theme={theme}
+              checked={chosen.has(tab.agentId)}
+              onToggle={() => toggle(tab.agentId)}
+              label={tab.title}
+              hint={[tab.workspaceTitle, tab.projectKey].filter(Boolean).join(" · ") || tab.cwd}
+            />
+            <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap", paddingLeft: 28 }}>
+              <Chip theme={theme} label={tab.provider} />
+              <Chip theme={theme} label={tab.state} tone={toneFor(tab.state)} />
+              {tab.archived ? <Chip theme={theme} label="archived" /> : null}
+              {tab.bytes > 0 ? <Chip theme={theme} label={formatBytes(tab.bytes)} /> : null}
+            </View>
+            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, paddingLeft: 28 }}>{tab.detail}</Text>
+          </View>
+        ))}
+      </Card>
+
+      <Card theme={theme}>
+        <Button
+          theme={theme}
+          label={picked.length > 0 ? `Preview ${picked.length} tab(s)` : "Preview selection"}
+          onPress={() => {
+            setPicked(picked);
+            onPreview();
+          }}
+          tone="primary"
+        />
+        {picked.length > 0 ? (
+          <Button theme={theme} label="Clear selection" onPress={() => setPicked([])} />
+        ) : null}
+      </Card>
+    </>
+  );
+}
+
 function PreviewTab({
   theme,
   peer,
+  pickedTabs,
+  chatOnly,
   direction,
   setDirection,
   includeArchived,
@@ -418,6 +591,8 @@ function PreviewTab({
 }: {
   theme: Theme;
   peer: Peer | null;
+  pickedTabs: string[];
+  chatOnly: boolean;
   direction: Direction;
   setDirection: (next: Direction) => void;
   includeArchived: boolean;
@@ -431,8 +606,15 @@ function PreviewTab({
   const [error, setError] = useState<string | null>(null);
 
   const plan = useQuery({
-    queryKey: ["sync", "plan", peer?.id, direction, includeArchived],
-    queryFn: () => callPlan({ peerId: peer?.id ?? "", direction, includeArchived }),
+    queryKey: ["sync", "plan", peer?.id, direction, includeArchived, chatOnly, pickedTabs.join(",")],
+    queryFn: () =>
+      callPlan({
+        peerId: peer?.id ?? "",
+        direction,
+        includeArchived,
+        scope: chatOnly ? "chat-only" : "everything",
+        agentIds: pickedTabs.length > 0 ? pickedTabs : null,
+      }),
     enabled: Boolean(peer),
     retry: false,
   });
@@ -443,6 +625,8 @@ function PreviewTab({
         peerId: peer?.id ?? "",
         direction,
         includeArchived,
+        scope: chatOnly ? "chat-only" : "everything",
+        agentIds: pickedTabs.length > 0 ? pickedTabs : null,
         skipStepIds: [],
         conflictResolutions: Object.entries(resolutions).map(([id, choice]) => ({ id, choice })),
       }),

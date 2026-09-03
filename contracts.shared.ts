@@ -196,14 +196,69 @@ export const SyncPlanSchema = z.object({
 });
 export type SyncPlan = z.infer<typeof SyncPlanSchema>;
 
+/**
+ * What a run is allowed to move.
+ *
+ * "everything" carries a selected project whole — workspaces, git, files and
+ * chat. "chat-only" carries the conversations and nothing else: no git fetch,
+ * no worktree registration, no file copies. A tab is worth moving on its own
+ * (you want yesterday's conversation on the other machine) far more often than
+ * a whole project is, and moving it should not drag a repo behind it.
+ */
+export const ScopeSchema = z.enum(["everything", "chat-only"]);
+export type Scope = z.infer<typeof ScopeSchema>;
+
 export const planBuild = defineRpc({
   name: "sync.plan-build",
   input: z.object({
     peerId: z.string(),
     direction: DirectionSchema,
     includeArchived: z.boolean(),
+    scope: ScopeSchema.nullable(),
+    /**
+     * Agent ids to carry. Empty means every tab in the selected projects —
+     * the previous behaviour, kept so an existing selection still works.
+     */
+    agentIds: z.array(z.string()).nullable(),
   }),
   output: z.object({ plan: SyncPlanSchema }),
+});
+
+/**
+ * One agent tab on the sending side, with what the receiving side already
+ * holds. This is the selection surface: a tab is chosen by name and recency,
+ * not by the project that happens to contain it.
+ */
+export const TabSchema = z.object({
+  agentId: z.string(),
+  projectKey: z.string(),
+  title: z.string(),
+  provider: z.string(),
+  cwd: z.string(),
+  workspaceTitle: z.string().nullable(),
+  lastActivityAt: z.string().nullable(),
+  archived: z.boolean(),
+  /** Transcript size on the sending side; 0 when the conversation has no transcript. */
+  bytes: z.number(),
+  /** How the receiving side compares: absent, older, or already current. */
+  state: z.enum(["missing", "older", "current", "no-transcript"]),
+  detail: z.string(),
+});
+export type Tab = z.infer<typeof TabSchema>;
+
+export const tabList = defineRpc({
+  name: "sync.tab-list",
+  input: z.object({
+    peerId: z.string(),
+    direction: DirectionSchema,
+    includeArchived: z.boolean(),
+    /** Free-text filter over tab title, workspace and project. */
+    query: z.string().nullable(),
+  }),
+  output: z.object({
+    tabs: z.array(TabSchema),
+    message: z.string().nullable(),
+  }),
 });
 
 // ------------------------------------------------------------------ run
@@ -237,6 +292,9 @@ export const runStart = defineRpc({
     peerId: z.string(),
     direction: DirectionSchema,
     includeArchived: z.boolean(),
+    scope: ScopeSchema.nullable(),
+    /** Agent ids to carry; empty means every tab in the selected projects. */
+    agentIds: z.array(z.string()).nullable(),
     /** Steps the user deselected in the preview. */
     skipStepIds: z.array(z.string()),
     /** Every conflict must be resolved or the run refuses to start. */

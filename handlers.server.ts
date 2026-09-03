@@ -3,7 +3,9 @@ import type {
   Direction,
   Peer,
   ProjectRow,
+  Scope,
   Settings,
+  Tab,
   SyncPlan,
 } from "./contracts.shared";
 import {
@@ -208,6 +210,8 @@ export async function handlePlanBuild(input: {
   peerId: string;
   direction: Direction;
   includeArchived: boolean;
+  scope?: Scope | null;
+  agentIds?: string[] | null;
 }) {
   const peer = requirePeer(input.peerId);
   const gathered = await gatherInventories(peer);
@@ -227,6 +231,8 @@ export async function handlePlanBuild(input: {
     peer,
     direction: input.direction,
     includeArchived: input.includeArchived,
+    scope: input.scope ?? null,
+    agentIds: input.agentIds ?? null,
     settings,
     state,
     local: gathered.local,
@@ -262,6 +268,10 @@ export async function handleRunStart(
     peerId: string;
     direction: Direction;
     includeArchived: boolean;
+    // Carried for signature parity with plan-build; a run always executes the
+    // cached plan the user actually previewed, never a freshly built one.
+    scope?: Scope | null;
+    agentIds?: string[] | null;
     skipStepIds: string[];
     conflictResolutions: Array<{ id: string; choice: "source" | "target" | "skip" }>;
   },
@@ -355,4 +365,92 @@ export async function handleSettingsSave(input: Settings) {
   };
   writeSettings(settings);
   return { settings };
+}
+
+/**
+ * Every agent tab on the sending side, with what the receiving side holds.
+ *
+ * This is the selection surface for chat sync. A tab is picked by its title and
+ * how recently it was touched — which is how anyone actually thinks about "the
+ * conversation I had yesterday" — rather than by the project that contains it.
+ */
+export async function handleTabList(input: {
+  peerId: string;
+  direction: Direction;
+  includeArchived: boolean;
+  query: string | null;
+}) {
+  const peer = requirePeer(input.peerId);
+  const gathered = await gatherInventories(peer);
+  if (!gathered.ok) return { tabs: [], message: gathered.error };
+
+  const source = input.direction === "push" ? gathered.local : gathered.remote;
+  const target = input.direction === "push" ? gathered.remote : gathered.local;
+
+  const workspaceTitle = new Map(
+    source.workspaces.map((workspace) => [workspace.workspaceId, workspace.title]),
+  );
+  const projectOf = new Map<string, string>();
+  for (const workspace of source.workspaces) {
+    const project = source.projects.find((entry) => entry.projectId === workspace.projectId);
+    if (project) projectOf.set(workspace.workspaceId, projectKeyOf(project));
+  }
+
+  const needle = (input.query ?? "").trim().toLowerCase();
+
+  const tabs: Tab[] = source.sessions
+    .filter((session) => Boolean(session.sessionId))
+    .filter((session) => input.includeArchived || !session.archivedAt)
+    .map((session) => {
+      const workspace = source.workspaces.find((entry) =>
+        session.workspaceId ? entry.workspaceId === session.workspaceId : entry.cwd === session.cwd,
+      );
+      const projectKey = workspace ? (projectOf.get(workspace.workspaceId) ?? "") : "";
+      const existing = session.sessionId ? target.transcripts[session.sessionId] : undefined;
+
+      // What the receiving side already holds. Resuming a carried session
+      // APPENDS, so a larger copy over there is the normal steady state after a
+      // sync — not a reason to send it again.
+      let state: Tab["state"];
+      let detail: string;
+      if (!session.transcriptPath || session.transcriptBytes === 0) {
+        state = "no-transcript";
+        detail = "No transcript on this machine — the tab carries, the conversation does not.";
+      } else if (!existing) {
+        state = "missing";
+        detail = `Not on the other machine · ${(session.transcriptBytes / 1024).toFixed(0)}KB`;
+      } else if (existing.bytes >= session.transcriptBytes) {
+        state = "current";
+        detail = "Already there, and at least as complete.";
+      } else {
+        state = "older";
+        detail = `Older there by ${((session.transcriptBytes - existing.bytes) / 1024).toFixed(0)}KB`;
+      }
+
+      return {
+        agentId: session.agentId,
+        projectKey,
+        title: session.title ?? session.sessionId?.slice(0, 8) ?? session.agentId.slice(0, 8),
+        provider: (session.persistenceProvider ?? session.provider ?? "unknown").toLowerCase(),
+        cwd: session.cwd,
+        workspaceTitle: workspace ? (workspaceTitle.get(workspace.workspaceId) ?? null) : null,
+        lastActivityAt: session.lastActivityAt,
+        archived: Boolean(session.archivedAt),
+        bytes: session.transcriptBytes,
+        state,
+        detail,
+      };
+    })
+    .filter((tab) => {
+      if (!needle) return true;
+      return (
+        tab.title.toLowerCase().includes(needle) ||
+        tab.projectKey.toLowerCase().includes(needle) ||
+        (tab.workspaceTitle ?? "").toLowerCase().includes(needle)
+      );
+    })
+    // Most recent first: the tab you want is nearly always the one you just left.
+    .sort((a, b) => (b.lastActivityAt ?? "").localeCompare(a.lastActivityAt ?? ""));
+
+  return { tabs, message: null };
 }

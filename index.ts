@@ -5,6 +5,7 @@ import {
   peerSave,
   peersList,
   planBuild,
+  tabList,
   projectsList,
   projectsSelect,
   runCancel,
@@ -19,6 +20,7 @@ import {
   handlePeerSave,
   handlePeersList,
   handlePlanBuild,
+  handleTabList,
   handleProjectsList,
   handleProjectsSelect,
   handleRunCancel,
@@ -44,6 +46,7 @@ export default function contribute(plugin: PluginContext) {
   plugin.handle(projectsList, handleProjectsList);
   plugin.handle(projectsSelect, handleProjectsSelect);
   plugin.handle(planBuild, handlePlanBuild);
+  plugin.handle(tabList, handleTabList);
   plugin.handle(runStart, handleRunStart);
   plugin.handle(runStatus, handleRunStatus);
   plugin.handle(runCancel, handleRunCancel);
