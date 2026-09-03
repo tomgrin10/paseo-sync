@@ -46,6 +46,20 @@ const TABS = [
   { id: "settings" as const, label: "Settings" },
 ];
 
+/**
+ * The daemon writes every record atomically — a temp file beside the target,
+ * then a rename — so it needs write permission on the *directory*, not just the
+ * files. A state directory left owned by another uid (a migration run as root,
+ * or an rsync that carried a foreign owner) reads fine and fails every write
+ * with EACCES on a .tmp path. Say so before a sync writes into it.
+ */
+function writabilityWarning(health: { agentDirsWritable: boolean }): string {
+  return health.agentDirsWritable
+    ? ""
+    : "  WARNING: a paseo/claude/codex state directory is not writable by the daemon user there," +
+      " so it will fail writes with EACCES. Fix with: chown -R <daemon-user> ~/.paseo ~/.claude ~/.codex";
+}
+
 export function SyncSurface({ theme, layout }: PluginSurfaceProps) {
   const [tab, setTab] = useState<TabId>("peers");
   const [peerId, setPeerId] = useState<string | null>(null);
@@ -167,7 +181,7 @@ function PeersTab({
     onSuccess: (result) => {
       setMessage(
         result.health.reachable
-          ? `Connected. ${result.health.detail}`
+          ? `Connected. ${result.health.detail}${writabilityWarning(result.health)}`
           : `Could not reach it: ${result.health.detail}`,
       );
       if (result.health.reachable) {
@@ -186,7 +200,11 @@ function PeersTab({
   const probe = useMutation({
     mutationFn: (id: string) => callProbe({ id }),
     onSuccess: (result) =>
-      setMessage(result.health.reachable ? `Reachable. ${result.health.detail}` : result.health.detail),
+      setMessage(
+        result.health.reachable
+          ? `Reachable. ${result.health.detail}${writabilityWarning(result.health)}`
+          : result.health.detail,
+      ),
     onError: (error) => setMessage(error instanceof Error ? error.message : String(error)),
   });
 

@@ -45,6 +45,13 @@ export const PeerHealthSchema = z.object({
   hasClaude: z.boolean(),
   hasCodex: z.boolean(),
   hasGit: z.boolean(),
+  /**
+   * False when a paseo/claude/codex state directory is not writable by the
+   * daemon user. The daemon writes records atomically (temp file + rename), so
+   * a non-writable directory fails every write with EACCES on a .tmp path even
+   * though the existing files read fine.
+   */
+  agentDirsWritable: z.boolean(),
 });
 export type PeerHealth = z.infer<typeof PeerHealthSchema>;
 

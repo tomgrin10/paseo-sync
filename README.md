@@ -136,6 +136,33 @@ list, so the sending side is left exactly as you had it. The receiving side gets
 it via `git stash store` as an ordinary stash entry, recoverable with the normal
 `git stash` commands. Every stash carried is named in the preview.
 
+### Ownership is checked before anything is written
+
+The daemon writes every record atomically: a dot-prefixed temp file beside the
+target, then a rename. That needs write permission on the **directory**, not
+just on the files in it.
+
+A state directory owned by another uid — left by a migration run as root, or an
+rsync that preserved the sending machine's owner — therefore reads perfectly and
+fails *every* write:
+
+```
+EACCES: permission denied, open '~/.paseo/agents/<project>/.<id>.json.<pid>.<ts>.tmp'
+```
+
+The daemon looks healthy while silently persisting nothing. Sync probes for this
+when a peer is added or re-probed and says so up front. Its own remote writes go
+through `sudo -u <daemon user>`, so files it creates are owned correctly; the
+check is for damage done by other tools.
+
+The fix is a chown on the receiving side:
+
+```bash
+chown -R <daemon-user> ~/.paseo ~/.claude ~/.codex
+```
+
+Stale `.tmp` files left by the failed writes are inert and safe to delete.
+
 ### Conflicts stop, they do not resolve
 
 If the receiving side's copy of a workspace is newer, Sync emits a conflict

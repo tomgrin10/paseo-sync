@@ -221,6 +221,18 @@ export async function probePeer(
     'command -v codex >/dev/null 2>&1 && echo "CODEX=yes" || echo "CODEX=no"',
     'command -v git >/dev/null 2>&1 && echo "GIT=yes" || echo "GIT=no"',
     'systemctl is-active paseo.service 2>/dev/null | head -1 | sed "s/^/DAEMON=/" || true',
+    // The daemon writes records atomically: a dot-prefixed temp file beside the
+    // target, then a rename. That needs WRITE on the *directory*, which a
+    // readable-but-foreign-owned dir does not give. A previous migration done as
+    // root (or an rsync that preserved a foreign uid) leaves exactly that shape,
+    // and the daemon then fails every write with EACCES on a .tmp path while
+    // looking otherwise healthy. Probe it the same way the daemon would.
+    'ph="${PASEO_HOME:-$HOME/.paseo}"; bad=0',
+    'for d in "$ph/agents" "$HOME/.claude/projects" "$HOME/.codex/sessions"; do',
+    '  [ -d "$d" ] || continue',
+    '  find "$d" -maxdepth 2 -type d ! -writable -print -quit 2>/dev/null | grep -q . && bad=1',
+    'done',
+    'echo "WRITABLE=$([ "$bad" = 0 ] && echo yes || echo no)"',
   ].join("; ");
 
   const result = await remoteAsDaemon(probeTarget, script, { timeoutMs: 20_000 });
@@ -235,6 +247,7 @@ export async function probePeer(
         hasClaude: false,
         hasCodex: false,
         hasGit: false,
+        agentDirsWritable: true,
       },
     };
   }
@@ -282,6 +295,7 @@ export async function probePeer(
       hasClaude: fields.get("CLAUDE") === "yes",
       hasCodex: fields.get("CODEX") === "yes",
       hasGit: fields.get("GIT") === "yes",
+      agentDirsWritable: fields.get("WRITABLE") !== "no",
     },
   };
 }
