@@ -155,6 +155,9 @@ export async function fetchFromPeer(input: {
   remoteUrl: string;
   sshCommand: string | null;
 }): Promise<{ ok: true; fetched: string[] } | { ok: false; error: string }> {
+  // `paseo-sync` is the remote-tracking namespace, not the repository name. It
+  // is written into users' repositories, and the checkout below resolves the
+  // same path, so renaming it would orphan every ref a previous run created.
   const refspecs = input.refs.map(
     (ref) => `+refs/heads/${ref}:refs/remotes/paseo-sync/${ref}`,
   );
