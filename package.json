@@ -1,5 +1,5 @@
 {
-  "name": "paseo-sync",
+  "name": "paseo-plugin-sync",
   "version": "0.1.0",
   "description": "A Paseo plugin that syncs selected projects - git history, chat transcripts and workspaces - between two Paseo daemons.",
   "license": "MIT",
@@ -10,6 +10,10 @@
     "claude-code",
     "codex"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/itsjustanks/paseo-plugin-sync.git"
+  },
   "private": false,
   "type": "module",
   "scripts": {
