@@ -53,11 +53,25 @@ const TABS = [
  * or an rsync that carried a foreign owner) reads fine and fails every write
  * with EACCES on a .tmp path. Say so before a sync writes into it.
  */
-function writabilityWarning(health: { agentDirsWritable: boolean }): string {
-  return health.agentDirsWritable
-    ? ""
-    : "  WARNING: a paseo/claude/codex state directory is not writable by the daemon user there," +
-      " so it will fail writes with EACCES. Fix with: chown -R <daemon-user> ~/.paseo ~/.claude ~/.codex";
+function writabilityWarning(health: {
+  agentDirsWritable: boolean;
+  canWriteAsDaemon: boolean;
+}): string {
+  const notes: string[] = [];
+  if (!health.canWriteAsDaemon) {
+    notes.push(
+      "this login cannot write as the peer's daemon user (not that user, no usable sudo, not root)," +
+        " so a sync to it would leave files the daemon cannot open. Log in as the daemon user," +
+        " or grant passwordless sudo",
+    );
+  }
+  if (!health.agentDirsWritable) {
+    notes.push(
+      "a paseo/claude/codex state directory is not writable by the daemon user there, so it will" +
+        " fail writes with EACCES. Fix with: chown -R <daemon-user> ~/.paseo ~/.claude ~/.codex",
+    );
+  }
+  return notes.length === 0 ? "" : `  WARNING: ${notes.join(". Also, ")}.`;
 }
 
 export function SyncSurface({ theme, layout }: PluginSurfaceProps) {

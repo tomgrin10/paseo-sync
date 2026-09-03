@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import type { Peer } from "./contracts.shared";
-import { remoteAsDaemon, sshArgs } from "./peers.server";
+import { asDaemonCommand, remoteAsDaemon, sshArgs } from "./peers.server";
 import type { Endpoint } from "./paths.server";
 import { rewriteJson, rewriteText } from "./paths.server";
 
@@ -80,12 +80,10 @@ async function writeRemoteStdin(
   command: string,
   stdin: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const user = peer.daemonUser;
-  const loginUser = peer.sshTarget.includes("@") ? peer.sshTarget.split("@")[0] : null;
-  const wrapped =
-    user && user !== loginUser
-      ? `sudo -n -u ${user} bash -lc ${shellQuote(command)}`
-      : `bash -lc ${shellQuote(command)}`;
+  // Runs as the daemon user where the host allows it, and falls back to a plain
+  // shell + chown where sudo is absent (correct only as root, which the peer
+  // health check enforces before a plan is allowed to write).
+  const { wrapped } = asDaemonCommand(peer, command, shellQuote);
 
   return new Promise((resolve) => {
     const child = execFile(

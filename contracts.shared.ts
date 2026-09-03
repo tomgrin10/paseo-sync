@@ -52,6 +52,13 @@ export const PeerHealthSchema = z.object({
    * though the existing files read fine.
    */
   agentDirsWritable: z.boolean(),
+  /**
+   * False when this login cannot produce files the peer's daemon will own: it
+   * is neither the daemon user, nor root, nor able to use sudo. `sudo` is
+   * absent on plenty of minimal hosts, so this is a real configuration rather
+   * than an error — but a sync must not write into such a peer.
+   */
+  canWriteAsDaemon: z.boolean(),
 });
 export type PeerHealth = z.infer<typeof PeerHealthSchema>;
 

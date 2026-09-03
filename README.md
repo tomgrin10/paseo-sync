@@ -136,6 +136,27 @@ list, so the sending side is left exactly as you had it. The receiving side gets
 it via `git stash store` as an ordinary stash entry, recoverable with the normal
 `git stash` commands. Every stash carried is named in the preview.
 
+### Acting as the daemon user, without assuming sudo
+
+Files written to a peer must end up owned by the user its daemon runs as, or the
+daemon cannot open them. There are three ways that happens, tried in order:
+
+| situation | how a write is made |
+|---|---|
+| the ssh login **is** the daemon user | directly, nothing needed |
+| passwordless `sudo` is available | `sudo -n -u <daemon user>` |
+| the login is **root** | written directly, then chowned |
+
+`sudo` is not a given. Minimal images, single-user containers and hardened hosts
+routinely omit it, and where it exists it may still refuse without a tty — which
+is why the invocation is `sudo -n`, failing fast instead of hanging on a prompt
+that will never be answered. When sudo is missing the command falls back to a
+plain shell rather than dying on `127`.
+
+A peer that is none of the three — not the daemon user, no usable sudo, not root
+— is reported as such when it is added. Sync says so instead of writing files
+the daemon would not be able to read.
+
 ### Ownership is checked before anything is written
 
 The daemon writes every record atomically: a dot-prefixed temp file beside the

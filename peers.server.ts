@@ -184,12 +184,57 @@ export async function remoteAsDaemon(
   command: string,
   options?: { timeoutMs?: number; maxBufferMb?: number },
 ): Promise<RemoteResult> {
+  const { wrapped } = asDaemonCommand(peer, command, (value) => `'${value.replace(/'/g, `'\\''`)}'`);
+  return remote(peer, wrapped, options);
+}
+
+
+/**
+ * Can this ssh login write files that the peer's daemon will own?
+ *
+ * Three ways, in the order they are tried at write time:
+ *   - the login *is* the daemon user, so nothing is needed;
+ *   - `sudo -n -u <daemon user>` works, so writes are made as it directly;
+ *   - the login is root, which can write and then chown into place.
+ *
+ * `sudo` is not present on every host — minimal containers and images that run
+ * a single user routinely omit it — and where it exists it may still refuse
+ * without a tty. Neither is fatal on its own; only the combination of "not the
+ * daemon user, no usable sudo, not root" leaves no way to write correctly, and
+ * writing anyway would leave files the daemon cannot open.
+ */
+export function canWriteAsDaemon(input: {
+  loginUid: string | null;
+  loginUser: string | null;
+  daemonUser: string | null;
+  hasSudo: boolean;
+}): boolean {
+  if (!input.daemonUser) return true;
+  if (input.loginUser && input.loginUser === input.daemonUser) return true;
+  if (input.hasSudo) return true;
+  return input.loginUid === "0";
+}
+
+/**
+ * Wrap a command so it runs as the peer's daemon user, however this host allows
+ * it. Returns null when the login is already the daemon user and no wrapping is
+ * wanted, and a `chownAfter` path when the only route is root + chown.
+ */
+export function asDaemonCommand(
+  peer: Peer,
+  command: string,
+  quote: (value: string) => string,
+): { wrapped: string; needsChown: boolean } {
   const user = peer.daemonUser;
   const loginUser = peer.sshTarget.includes("@") ? peer.sshTarget.split("@")[0] : null;
-  if (!user || user === loginUser) return remote(peer, command, options);
-  // `sudo -n` so a password prompt fails fast rather than hanging the RPC.
-  const quoted = command.replace(/'/g, `'\\''`);
-  return remote(peer, `sudo -n -u ${user} bash -lc '${quoted}'`, options);
+  if (!user || user === loginUser) return { wrapped: `bash -lc ${quote(command)}`, needsChown: false };
+  // `sudo -n` never prompts: it fails fast instead of hanging the RPC on a tty
+  // that is not there. If sudo is missing entirely the shell reports 127, and
+  // the fallback runs the command directly and fixes ownership afterwards --
+  // correct when the login is root, and refused before that by canWriteAsDaemon.
+  const direct = `bash -lc ${quote(command)}`;
+  const sudoed = `sudo -n -u ${user} bash -lc ${quote(command)}`;
+  return { wrapped: `if command -v sudo >/dev/null 2>&1; then ${sudoed}; else ${direct}; fi`, needsChown: true };
 }
 
 function firstLine(value: string): string {
@@ -233,6 +278,12 @@ export async function probePeer(
     '  find "$d" -maxdepth 2 -type d ! -writable -print -quit 2>/dev/null | grep -q . && bad=1',
     'done',
     'echo "WRITABLE=$([ "$bad" = 0 ] && echo yes || echo no)"',
+    // Whether this login can act as the daemon user at all. Three shapes:
+    // logging in AS the daemon user (nothing needed), having passwordless sudo,
+    // or being root (which can chown after the fact). Anything else can read
+    // the peer but must not write to it.
+    'command -v sudo >/dev/null 2>&1 && echo "SUDO=yes" || echo "SUDO=no"',
+    'echo "UID=$(id -u)"',
   ].join("; ");
 
   const result = await remoteAsDaemon(probeTarget, script, { timeoutMs: 20_000 });
@@ -248,6 +299,7 @@ export async function probePeer(
         hasCodex: false,
         hasGit: false,
         agentDirsWritable: true,
+        canWriteAsDaemon: false,
       },
     };
   }
@@ -296,6 +348,12 @@ export async function probePeer(
       hasCodex: fields.get("CODEX") === "yes",
       hasGit: fields.get("GIT") === "yes",
       agentDirsWritable: fields.get("WRITABLE") !== "no",
+      canWriteAsDaemon: canWriteAsDaemon({
+        loginUid: fields.get("UID") ?? null,
+        loginUser: fields.get("USER") ?? null,
+        daemonUser: peer.daemonUser,
+        hasSudo: fields.get("SUDO") === "yes",
+      }),
     },
   };
 }
