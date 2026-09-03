@@ -1,0 +1,9 @@
+node_modules/
+
+# Never commit local sync config — peers, secrets, state are machine-specific
+# and contain hostnames, key paths and tokens. They live in ~/.paseo/sync/.
+peers.json
+secrets.json
+settings.json
+state.json
+*.local.json
