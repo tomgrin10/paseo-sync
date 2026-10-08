@@ -1,1 +1,6 @@
-{ "id": "sync" }
+{
+  "id": "sync",
+  "requirements": {
+    "paseo": ">=0.11.0"
+  }
+}

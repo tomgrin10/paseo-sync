@@ -1,32 +1,55 @@
 {
-  "name": "paseo-plugin-sync",
-  "version": "0.1.0",
-  "description": "A Paseo plugin that syncs selected projects - git history, chat transcripts and workspaces - between two Paseo daemons.",
+  "name": "paseo-sync",
+  "version": "1.0.0",
+  "type": "module",
   "license": "MIT",
+  "description": "Copy or move Paseo workspaces between hosts, with Git history, local changes, and agent conversations.",
+  "author": "Tom Gringauz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomgrin10/paseo-sync.git"
+  },
+  "homepage": "https://github.com/tomgrin10/paseo-sync#readme",
+  "bugs": "https://github.com/tomgrin10/paseo-sync/issues",
   "keywords": [
     "paseo",
     "paseo-plugin",
-    "sync",
-    "claude-code",
-    "codex"
+    "workspaces",
+    "sync"
   ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/itsjustanks/paseo-plugin-sync.git"
-  },
-  "private": false,
-  "type": "module",
+  "files": [
+    "paseo-plugin.json",
+    "index.client.tsx",
+    "index.server.ts",
+    "client/",
+    "server/",
+    "shared/",
+    "scripts/build.mjs"
+  ],
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "prepare": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "verify": "npm run prepare && npm run typecheck && npm run format:check && npm test",
+    "test:live": "tsx scripts/live-test.ts",
+    "format:check": "prettier --check index.client.tsx index.server.ts client server shared/types.ts shared/rpc.ts tests scripts README.md CHANGELOG.md PRODUCT.md DESIGN.md package.json paseo-plugin.json tsconfig.json"
   },
   "devDependencies": {
-    "@getpaseo/client": "^0.6.1",
-    "@getpaseo/protocol": "^0.6.1",
+    "@getpaseo/client": "0.11.1",
+    "@getpaseo/plugin": "0.11.1",
+    "@getpaseo/protocol": "0.11.1",
     "@tanstack/react-query": "^5.90.11",
     "@types/node": "^22.10.2",
     "@types/react": "~19.2.0",
+    "@types/ssh2": "^1.15.6",
+    "esbuild": "^0.28.2",
+    "prettier": "^3.9.9",
     "react": "19.1.0",
+    "react-dom": "^19.1.0",
     "react-native": "0.81.5",
+    "react-native-web": "^0.21.2",
+    "ssh2": "^1.17.0",
+    "tsx": "^4.20.0",
     "typescript": "^5.9.3",
     "zod": "^4.4.3"
   }
